@@ -86,7 +86,7 @@ if __name__ == "__main__":
         print(f"\n{'='*60}")
         print(f"Tool: {t.name}")
         print(f"Description: {t.description}")
-        print(f"Args Schema: {t.args_schema.schema() if t.args_schema else 'None'}")
+        print(f"Args Schema: {t.args_schema.model_json_schema() if t.args_schema else 'None'}")
 
     print("\n" + "="*60)
     print("SUMMARY")
