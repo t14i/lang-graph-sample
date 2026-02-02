@@ -448,9 +448,159 @@ graph = graph_builder.compile(checkpointer=checkpointer)
 
 ---
 
-# Part 4: Production Considerations
+# Part 4: Durable Execution
 
-## 4.1 Audit Logging
+## 4.1 Basic Checkpoint Behavior (07_durable_basic.py)
+
+**Goal**: Understand when and what is checkpointed
+
+### Checkpoint Timing
+
+```
+=== Executing graph ===
+  [Step1] Executing... (step_count: 0)
+  [Step2] Executing... (step_count: 1)
+  [Step3] Executing... (step_count: 2)
+
+Checkpoint history:
+  [0] next=(), step_count=3        ← After step3
+  [1] next=('step3',), step_count=2  ← After step2
+  [2] next=('step2',), step_count=1  ← After step1
+  [3] next=('step1',), step_count=0  ← Initial
+  [4] next=('__start__',)            ← Before start
+```
+
+**Observation**: Checkpoint saved AFTER each node completes.
+
+### Resume After Restart
+
+```python
+# Phase 1: Execute, stop after step1
+graph1 = build_graph()
+for chunk in graph1.stream(input, config):
+    if step1_done:
+        break  # Simulate crash
+
+# Phase 2: New graph instance (simulates restart)
+graph2 = build_graph()
+state = graph2.get_state(config)
+# state.next = ('step2',) ← Recovered!
+
+# Phase 3: Resume
+result = graph2.invoke(None, config=config)
+# Continues from step2
+```
+
+**Output**:
+```
+[Phase 1] First execution...
+  [Step1] Executing...
+  Step1 completed, simulating crash...
+  State after crash: next=('step2',), step_count=1
+
+[Phase 2] After restart...
+  Recovered state: next=('step2',), step_count=1
+  Recovered metadata: {'step1_done': True}
+
+[Phase 3] Resuming...
+  [Step2] Executing...
+  [Step3] Executing...
+  Final step_count: 3
+```
+
+---
+
+## 4.2 HITL + Durability (08_durable_hitl.py)
+
+**Goal**: Verify interrupt survives process restart
+
+### Test Flow
+
+```
+[Phase 1] Start → Agent → interrupt() → STOP
+
+[Phase 2] Restart (new graph instance)
+  Recovered state: next=('human_approval',)
+  Recovered interrupt value: {tool_name, tool_args, ...}
+
+[Phase 3] Resume with Command(resume={"action": "approve"})
+  → Tool executes → Complete
+```
+
+**Output**:
+```
+[Phase 1] Starting execution...
+  Interrupted at: ('human_approval',)
+  Interrupt value: {'tool_name': 'send_email', 'tool_args': {...}}
+
+[Phase 2] Simulating restart...
+  Recovered state: next=('human_approval',)
+  Recovered interrupt: {'tool_name': 'send_email', ...}
+
+[Phase 3] Resuming with approval...
+  Final response: Email sent successfully
+  Final approval_count: 1
+```
+
+**Key Finding**: HITL interrupts are fully durable. Server can restart without losing pending approvals.
+
+---
+
+## 4.3 Production Concerns (09_durable_production.py)
+
+### Concurrent Execution (Same thread_id)
+
+```
+Starting 3 concurrent invocations on same thread_id...
+
+Results: [(0, 1), (2, 1), (1, 1)]  ← All got counter=1
+Errors: []
+Final counter: 1  ← Last write wins
+```
+
+**Problem**: Concurrent invoke() on same thread_id causes race conditions.
+
+**Solution**: Generate unique thread_id per conversation.
+
+### Checkpoint Size Growth
+
+```
+1 threads, 1 msgs each: 4.0 KB
+2 threads, 2 msgs each: 8.0 KB
+5 threads, 5 msgs each: 20.0 KB
+10 threads, 10 msgs each: 40.0 KB
+```
+
+**Observation**: Linear growth. Full state snapshot per checkpoint.
+
+### Thread Listing
+
+```python
+# No built-in API - must query storage directly
+cursor.execute("SELECT DISTINCT thread_id FROM checkpoints")
+threads = cursor.fetchall()
+# ['list-test-0', 'list-test-1', ...]
+```
+
+**Problem**: No API to list all thread_ids.
+
+### Summary
+
+| Concern | Status | Solution |
+|---------|--------|----------|
+| Checkpoint timing | ✅ After each node | - |
+| Resume after restart | ✅ Works | Use same thread_id |
+| HITL persistence | ✅ Full support | - |
+| Concurrent access | ⚠️ Race condition | Unique thread_id |
+| Checkpoint cleanup | ❌ No auto-cleanup | Custom job |
+| Thread listing | ❌ No API | Query storage |
+| State migration | ⚠️ Manual | Version schema |
+
+---
+
+# Part 5: Production Considerations
+
+## 5.1 Audit Logging
 
 **Current**: None
 
@@ -474,7 +624,7 @@ def human_approval(state: State) -> Command:
 
 ---
 
-## 4.2 Timeout
+## 5.2 Timeout
 
 **Current**: None. Waits forever when interrupted.
 
@@ -496,7 +646,7 @@ async def cleanup_stale_threads():
 
 ---
 
-## 4.3 Notification System
+## 5.3 Notification System
 
 **Current**: None
 
@@ -510,7 +660,7 @@ if state.next:
 
 ---
 
-## 4.4 Authorization (Who Can Approve)
+## 5.4 Authorization (Who Can Approve)
 
 **Current**: None
 
@@ -528,7 +678,7 @@ def human_approval(state: State) -> Command:
 
 ---
 
-## 4.5 Web API Integration Pattern
+## 5.5 Web API Integration Pattern
 
 ```python
 from fastapi import FastAPI
@@ -561,8 +711,7 @@ async def approve(thread_id: str, decision: dict):
 ```
 
 ---
-
-# Part 5: Evaluation Summary
+# Part 6: Evaluation Summary
 
 ## Good
 
@@ -575,6 +724,8 @@ async def approve(thread_id: str, decision: dict):
 | `Command` control | ⭐⭐⭐⭐⭐ | Flexible goto, update, resume |
 | Approve/Reject/Edit | ⭐⭐⭐⭐⭐ | All patterns implementable |
 | State persistence | ⭐⭐⭐⭐ | Postgres/SQLite support |
+| Durable execution | ⭐⭐⭐⭐ | Resume after restart |
+| HITL durability | ⭐⭐⭐⭐⭐ | Interrupts survive restart |
 
 ## Not Good
 
@@ -585,10 +736,13 @@ async def approve(thread_id: str, decision: dict):
 | Timeout | ⭐ | No mechanism |
 | Notification | ⭐ | No mechanism |
 | Authorization | ⭐ | No mechanism |
+| Checkpoint cleanup | ⭐ | No auto-cleanup |
+| Thread listing | ⭐ | No built-in API |
+| Concurrent access | ⭐⭐ | Race condition possible |
 
 ---
 
-# Conclusion
+# Part 7: Conclusion
 
 ## Tool Calling
 
@@ -607,14 +761,25 @@ However, production-required features are not provided:
 
 **These appear to be by design - "not LangGraph's responsibility".**
 
+## Durable Execution
+
+**Solid foundation.** Checkpoints saved after each node, state fully recoverable after restart. HITL interrupts persist correctly.
+
+Production concerns:
+- No auto-cleanup (checkpoint size grows indefinitely)
+- No thread listing API (must query storage directly)
+- Concurrent access on same thread_id causes race conditions
+
 ## Additional Development for Production
 
 1. **Approval Management Service** - Manage pending threads, provide UI
 2. **Audit Log Service** - Record all operations
 3. **Notification Service** - Slack/Email integration
 4. **Authorization Service** - Role-based approval permissions
-5. **Background Jobs** - Timeout handling, cleanup
+5. **Background Jobs** - Timeout handling, checkpoint cleanup
 6. **Retry/Circuit Breaker** - Stabilize external API calls
+7. **Thread Management** - Track active threads, cleanup old ones
+8. **Unique ID Generation** - Prevent concurrent access issues
 
 **Effort estimate**: 3-5x the graph execution portion for surrounding systems.
 
@@ -630,7 +795,10 @@ lang-graph-sample/
 ├── 04_tool_error_handling.py     # Error handling
 ├── 05_hitl_interrupt.py          # HITL basics (interrupt)
 ├── 06_hitl_approve_reject_edit.py # Approve/Reject/Edit
-├── 07_production_considerations.py # Production considerations
+├── 07_durable_basic.py           # Durable execution basics
+├── 08_durable_hitl.py            # HITL + Durability
+├── 09_durable_production.py      # Durable production concerns
+├── 10_production_considerations.py # Overall production summary
 ├── REPORT.md                     # This report
 ├── REPORT_ja.md                  # Japanese version
 ├── .env.example                  # Environment template

@@ -1,10 +1,10 @@
 """
-LangGraph HITL - Production Considerations
-What's missing for production use?
+LangGraph Production Considerations
+What's missing for production use? (HITL + Durable Execution)
 """
 
 # =============================================================================
-# PRODUCTION CONSIDERATIONS FOR LANGGRAPH HITL
+# PRODUCTION CONSIDERATIONS FOR LANGGRAPH
 # =============================================================================
 
 """
@@ -151,6 +151,82 @@ Can use streaming to get partial results:
 
 VERDICT: ✅ Supported
 
+
+# =============================================================================
+# DURABLE EXECUTION CONSIDERATIONS
+# =============================================================================
+
+## 11. CHECKPOINT CLEANUP - Old checkpoints accumulate
+
+LangGraph does NOT auto-cleanup old checkpoints.
+Each node execution creates a new checkpoint.
+DB grows indefinitely.
+
+    # Must implement cleanup job
+    # Query checkpointer storage directly (DB-specific)
+    cursor.execute("DELETE FROM checkpoints WHERE created_at < ?", [cutoff])
+
+VERDICT: ⚠️ Must implement yourself
+
+
+## 12. THREAD LISTING - Finding active/pending threads
+
+No built-in API to list all thread_ids.
+Need this for:
+    - Finding pending approval requests
+    - Cleanup jobs
+    - Monitoring dashboards
+
+    # Must query storage directly
+    cursor.execute("SELECT DISTINCT thread_id FROM checkpoints")
+
+VERDICT: ⚠️ Must implement yourself (DB-specific)
+
+
+## 13. CONCURRENT ACCESS - Same thread_id race condition
+
+Concurrent invoke() on same thread_id causes race conditions.
+Last write wins, state may be inconsistent.
+
+    # BAD: Two requests on same thread_id
+    thread1: invoke(msg1, thread_id="abc")  # counter=1
+    thread2: invoke(msg2, thread_id="abc")  # counter=1 (not 2!)
+
+    # GOOD: Unique thread_id per conversation
+    thread_id = f"user-{user_id}-{uuid4()}"
+
+VERDICT: ⚠️ Must generate unique thread_ids
+
+
+## 14. STATE SCHEMA MIGRATION - Changing State definition
+
+Adding new fields: OK (use default values)
+Removing fields: May break on resume
+Changing types: Dangerous
+
+    # Version your state schema
+    class StateV2(TypedDict):
+        messages: Annotated[list, add_messages]
+        counter: int
+        new_field: str = ""  # Added in V2
+
+VERDICT: ⚠️ Must manage schema versions carefully
+
+
+## 15. CHECKPOINT SIZE - State grows with messages
+
+Full state snapshot per checkpoint.
+Message history accumulates.
+Long conversations = large checkpoints.
+
+    # Consider:
+    # 1. Message summarization
+    # 2. Checkpoint compression
+    # 3. Max message limits
+
+VERDICT: ⚠️ Monitor and manage
+
+
 """
 
 # =============================================================================
@@ -159,7 +235,7 @@ VERDICT: ✅ Supported
 
 SUMMARY = """
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ LANGGRAPH HITL - PRODUCTION READINESS SUMMARY                               │
+│ LANGGRAPH PRODUCTION READINESS SUMMARY                                      │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │ ✅ WORKS WELL:                                                              │
@@ -168,24 +244,37 @@ SUMMARY = """
 │    - Persistent checkpointer (Postgres/SQLite)                              │
 │    - Multiple sequential approvals                                          │
 │    - State resumability across restarts                                     │
+│    - HITL interrupts survive process restart                                │
 │    - Streaming support                                                      │
 │                                                                             │
-│ ⚠️ MUST IMPLEMENT YOURSELF:                                                 │
+│ ⚠️ MUST IMPLEMENT YOURSELF (HITL):                                          │
 │    - Audit logging (who approved, when)                                     │
 │    - Timeout handling (stale approval requests)                             │
 │    - Notification system (email/Slack/webhook)                              │
 │    - Authorization (who can approve what)                                   │
 │    - User context tracking                                                  │
 │                                                                             │
+│ ⚠️ MUST IMPLEMENT YOURSELF (DURABLE EXECUTION):                             │
+│    - Checkpoint cleanup (old checkpoints accumulate)                        │
+│    - Thread listing API (query DB directly)                                 │
+│    - Unique thread_id generation (avoid race conditions)                    │
+│    - State schema versioning (for migrations)                               │
+│    - Checkpoint size monitoring                                             │
+│                                                                             │
 │ 📝 VERDICT:                                                                 │
-│    LangGraph provides the core HITL primitives well.                        │
+│    LangGraph provides solid core primitives for:                            │
+│    - Graph execution with state                                             │
+│    - Human-in-the-loop interrupts                                           │
+│    - Durable execution with checkpoints                                     │
+│                                                                             │
 │    But for production, you need to build:                                   │
 │    - Approval management layer (UI, API, notifications)                     │
 │    - Audit/compliance layer                                                 │
-│    - Timeout/cleanup jobs                                                   │
+│    - Checkpoint cleanup jobs                                                │
+│    - Thread management system                                               │
+│    - Monitoring and alerting                                                │
 │                                                                             │
-│    It's a "bring your own approval infrastructure" situation.               │
-│    The graph execution part is solid, the human workflow part is DIY.       │
+│    Estimate: 3-5x effort for surrounding infrastructure                     │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 """

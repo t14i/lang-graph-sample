@@ -448,9 +448,159 @@ graph = graph_builder.compile(checkpointer=checkpointer)
 
 ---
 
-# Part 4: 本番環境での課題
+# Part 4: Durable Execution
 
-## 4.1 監査ログ
+## 4.1 基本的なCheckpoint動作（07_durable_basic.py）
+
+**目的**: Checkpointがいつ、何を保存するか理解する
+
+### Checkpointのタイミング
+
+```
+=== グラフ実行 ===
+  [Step1] 実行中... (step_count: 0)
+  [Step2] 実行中... (step_count: 1)
+  [Step3] 実行中... (step_count: 2)
+
+Checkpoint履歴:
+  [0] next=(), step_count=3        ← Step3完了後
+  [1] next=('step3',), step_count=2  ← Step2完了後
+  [2] next=('step2',), step_count=1  ← Step1完了後
+  [3] next=('step1',), step_count=0  ← 初期状態
+  [4] next=('__start__',)            ← 開始前
+```
+
+**観察**: Checkpointは各ノード完了後に保存される。
+
+### 再起動後の再開
+
+```python
+# Phase 1: 実行してstep1後に停止
+graph1 = build_graph()
+for chunk in graph1.stream(input, config):
+    if step1_done:
+        break  # クラッシュをシミュレート
+
+# Phase 2: 新しいグラフインスタンス（再起動をシミュレート）
+graph2 = build_graph()
+state = graph2.get_state(config)
+# state.next = ('step2',) ← 復旧された！
+
+# Phase 3: 再開
+result = graph2.invoke(None, config=config)
+# step2から継続
+```
+
+**実行結果**:
+```
+[Phase 1] 最初の実行...
+  [Step1] 実行中...
+  Step1完了、クラッシュをシミュレート...
+  クラッシュ後の状態: next=('step2',), step_count=1
+
+[Phase 2] 再起動後...
+  復旧した状態: next=('step2',), step_count=1
+  復旧したmetadata: {'step1_done': True}
+
+[Phase 3] 再開中...
+  [Step2] 実行中...
+  [Step3] 実行中...
+  最終step_count: 3
+```
+
+---
+
+## 4.2 HITL + 永続化（08_durable_hitl.py）
+
+**目的**: interruptがプロセス再起動後も維持されるか確認
+
+### テストフロー
+
+```
+[Phase 1] 開始 → Agent → interrupt() → 停止
+
+[Phase 2] 再起動（新しいグラフインスタンス）
+  復旧した状態: next=('human_approval',)
+  復旧したinterrupt値: {tool_name, tool_args, ...}
+
+[Phase 3] Command(resume={"action": "approve"})で再開
+  → ツール実行 → 完了
+```
+
+**実行結果**:
+```
+[Phase 1] 実行開始...
+  中断位置: ('human_approval',)
+  Interrupt値: {'tool_name': 'send_email', 'tool_args': {...}}
+
+[Phase 2] 再起動をシミュレート...
+  復旧した状態: next=('human_approval',)
+  復旧したinterrupt: {'tool_name': 'send_email', ...}
+
+[Phase 3] 承認で再開...
+  最終レスポンス: メール送信成功
+  最終approval_count: 1
+```
+
+**重要な発見**: HITLのinterruptは完全に永続化される。サーバー再起動しても承認待ちが失われない。
+
+---
+
+## 4.3 本番での課題（09_durable_production.py）
+
+### 並行実行（同じthread_id）
+
+```
+同じthread_idで3つの並行実行を開始...
+
+結果: [(0, 1), (2, 1), (1, 1)]  ← 全部counter=1
+エラー: []
+最終counter: 1  ← 最後の書き込みが勝つ
+```
+
+**問題**: 同じthread_idでの並行invoke()は競合状態を引き起こす。
+
+**解決策**: 会話ごとにユニークなthread_idを生成する。
+
+### Checkpointサイズの増加
+
+```
+1スレッド, 各1メッセージ: 4.0 KB
+2スレッド, 各2メッセージ: 8.0 KB
+5スレッド, 各5メッセージ: 20.0 KB
+10スレッド, 各10メッセージ: 40.0 KB
+```
+
+**観察**: 線形に増加。各Checkpointで状態全体のスナップショット。
+
+### スレッド一覧取得
+
+```python
+# 組み込みAPIなし - ストレージを直接クエリ
+cursor.execute("SELECT DISTINCT thread_id FROM checkpoints")
+threads = cursor.fetchall()
+# ['list-test-0', 'list-test-1', ...]
+```
+
+**問題**: 全thread_idを取得するAPIがない。
+
+### まとめ
+
+| 課題 | 状態 | 解決策 |
+|------|------|--------|
+| Checkpointタイミング | ✅ 各ノード後 | - |
+| 再起動後の再開 | ✅ 動作する | 同じthread_id使用 |
+| HITL永続化 | ✅ 完全サポート | - |
+| 並行アクセス | ⚠️ 競合状態 | ユニークthread_id |
+| Checkpointクリーンアップ | ❌ 自動なし | カスタムジョブ |
+| スレッド一覧 | ❌ APIなし | ストレージ直接クエリ |
+| 状態マイグレーション | ⚠️ 手動 | スキーマバージョニング |
+
+---
+
+# Part 5: 本番環境での課題
+
+## 5.1 監査ログ
 
 **現状**: なし
 
@@ -474,7 +624,7 @@ def human_approval(state: State) -> Command:
 
 ---
 
-## 4.2 タイムアウト
+## 5.2 タイムアウト
 
 **現状**: なし。中断したまま永久に待機。
 
@@ -496,7 +646,7 @@ async def cleanup_stale_threads():
 
 ---
 
-## 4.3 通知システム
+## 5.3 通知システム
 
 **現状**: なし
 
@@ -510,7 +660,7 @@ if state.next:
 
 ---
 
-## 4.4 認可（誰が承認できるか）
+## 5.4 認可（誰が承認できるか）
 
 **現状**: なし
 
@@ -528,7 +678,7 @@ def human_approval(state: State) -> Command:
 
 ---
 
-## 4.5 Web APIとの統合パターン
+## 5.5 Web APIとの統合パターン
 
 ```python
 from fastapi import FastAPI
@@ -562,7 +712,7 @@ async def approve(thread_id: str, decision: dict):
 
 ---
 
-# Part 5: 評価まとめ
+# Part 6: 評価まとめ
 
 ## Good
 
@@ -575,6 +725,8 @@ async def approve(thread_id: str, decision: dict):
 | `Command` による制御 | ⭐⭐⭐⭐⭐ | goto, update, resumeが柔軟 |
 | Approve/Reject/Edit | ⭐⭐⭐⭐⭐ | 全パターン実装可能 |
 | 状態永続化 | ⭐⭐⭐⭐ | Postgres/SQLite対応 |
+| Durable Execution | ⭐⭐⭐⭐ | 再起動後も再開可能 |
+| HITL永続化 | ⭐⭐⭐⭐⭐ | interruptが再起動後も維持 |
 
 ## Not Good
 
@@ -585,6 +737,9 @@ async def approve(thread_id: str, decision: dict):
 | タイムアウト | ⭐ | 仕組みなし |
 | 通知 | ⭐ | 仕組みなし |
 | 認可 | ⭐ | 仕組みなし |
+| Checkpointクリーンアップ | ⭐ | 自動クリーンアップなし |
+| スレッド一覧API | ⭐ | 組み込みAPIなし |
+| 並行アクセス | ⭐⭐ | 競合状態の可能性 |
 
 ---
 
@@ -607,14 +762,25 @@ async def approve(thread_id: str, decision: dict):
 
 **これらは「LangGraphの責務ではない」という設計判断と思われる。**
 
+## Durable Execution
+
+**基盤は堅牢。** 各ノード完了後にCheckpointが保存され、再起動後も状態が完全に復旧する。HITLのinterruptも正しく永続化される。
+
+本番での課題:
+- 自動クリーンアップなし（Checkpointサイズが無限に増加）
+- スレッド一覧APIなし（ストレージを直接クエリ必要）
+- 同じthread_idでの並行アクセスは競合状態を引き起こす
+
 ## 本番導入時の追加開発
 
 1. **承認管理サービス** - 承認待ちスレッドの管理、UI提供
 2. **監査ログサービス** - 全操作の記録
 3. **通知サービス** - Slack/Email連携
 4. **認可サービス** - ロールベースの承認権限
-5. **バックグラウンドジョブ** - タイムアウト処理、クリーンアップ
+5. **バックグラウンドジョブ** - タイムアウト処理、Checkpointクリーンアップ
 6. **リトライ/サーキットブレーカー** - 外部API呼び出しの安定化
+7. **スレッド管理** - アクティブスレッドの追跡、古いスレッドのクリーンアップ
+8. **ユニークID生成** - 並行アクセス問題の回避
 
 **工数感**: グラフ実行部分の3-5倍の周辺システムが必要。
 
@@ -630,9 +796,13 @@ lang-graph-sample/
 ├── 04_tool_error_handling.py     # エラーハンドリング
 ├── 05_hitl_interrupt.py          # HITL基本（interrupt）
 ├── 06_hitl_approve_reject_edit.py # Approve/Reject/Edit
-├── 07_production_considerations.py # 本番課題まとめ
-├── REPORT.md                     # このレポート
-├── .env                          # API key
+├── 07_durable_basic.py           # Durable Execution基本
+├── 08_durable_hitl.py            # HITL + 永続化
+├── 09_durable_production.py      # Durable本番課題
+├── 10_production_considerations.py # 本番課題まとめ
+├── REPORT.md                     # 英語版レポート
+├── REPORT_ja.md                  # このレポート（日本語）
+├── .env.example                  # 環境変数テンプレート
 ├── pyproject.toml
 └── uv.lock
 ```

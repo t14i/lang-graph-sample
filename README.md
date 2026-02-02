@@ -25,7 +25,10 @@ uv run --env-file .env python 01_quickstart.py
 | `04_tool_error_handling.py` | Error handling, retry pattern |
 | `05_hitl_interrupt.py` | HITL basics - interrupt/Command |
 | `06_hitl_approve_reject_edit.py` | Approve/Reject/Edit patterns |
-| `07_production_considerations.py` | Production considerations |
+| `07_durable_basic.py` | Durable execution basics |
+| `08_durable_hitl.py` | HITL + Durability |
+| `09_durable_production.py` | Durable execution production concerns |
+| `10_production_considerations.py` | Overall production considerations |
 | `REPORT.md` | Detailed verification report |
 | `REPORT_ja.md` | Japanese version of the report |
 
@@ -45,5 +48,14 @@ uv run --env-file .env python 01_quickstart.py
   - Timeout handling
   - Notification system
   - Authorization
+
+### Durable Execution
+- Checkpoint saved after each node
+- Survives process restart (resume from last checkpoint)
+- HITL interrupts persist across restarts
+- Production concerns:
+  - No auto-cleanup of old checkpoints
+  - No built-in thread listing API
+  - Concurrent execution on same thread_id can cause issues
 
 See [REPORT.md](./REPORT.md) for details.
