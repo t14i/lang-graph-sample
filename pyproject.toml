@@ -1,0 +1,11 @@
+[project]
+name = "lang-graph-sample"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "langchain-anthropic>=1.3.1",
+    "langgraph>=1.0.7",
+    "langgraph-checkpoint-postgres>=3.0.4",
+]
