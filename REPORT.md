@@ -715,30 +715,30 @@ async def approve(thread_id: str, decision: dict):
 
 ## Good
 
-| Item | Rating | Notes |
-|------|--------|-------|
-| `@tool` decorator | ⭐⭐⭐⭐⭐ | Simple, Pydantic support |
-| `ToolNode` | ⭐⭐⭐⭐⭐ | Auto execution, error handling |
-| Parallel tool calls | ⭐⭐⭐⭐⭐ | Multiple calls in one message |
-| `interrupt()` API | ⭐⭐⭐⭐⭐ | Simple and intuitive |
-| `Command` control | ⭐⭐⭐⭐⭐ | Flexible goto, update, resume |
-| Approve/Reject/Edit | ⭐⭐⭐⭐⭐ | All patterns implementable |
-| State persistence | ⭐⭐⭐⭐ | Postgres/SQLite support |
-| Durable execution | ⭐⭐⭐⭐ | Resume after restart |
-| HITL durability | ⭐⭐⭐⭐⭐ | Interrupts survive restart |
+| Category | Item | Rating | Notes |
+|----------|------|--------|-------|
+| Tool Calling | `@tool` decorator | ⭐⭐⭐⭐⭐ | Simple, Pydantic support |
+| Tool Calling | `ToolNode` | ⭐⭐⭐⭐⭐ | Auto execution, error handling |
+| Tool Calling | Parallel tool calls | ⭐⭐⭐⭐⭐ | Multiple calls in one message |
+| HITL | `interrupt()` API | ⭐⭐⭐⭐⭐ | Simple and intuitive |
+| HITL | `Command` control | ⭐⭐⭐⭐⭐ | Flexible goto, update, resume |
+| HITL | Approve/Reject/Edit | ⭐⭐⭐⭐⭐ | All patterns implementable |
+| Durable | State persistence | ⭐⭐⭐⭐ | Postgres/SQLite support |
+| Durable | Durable execution | ⭐⭐⭐⭐ | Resume after restart |
+| Durable | HITL durability | ⭐⭐⭐⭐⭐ | Interrupts survive restart |
 
 ## Not Good
 
-| Item | Rating | Notes |
-|------|--------|-------|
-| Tool retry | ⭐⭐ | Custom implementation needed |
-| Audit logging | ⭐ | Fully custom |
-| Timeout | ⭐ | No mechanism |
-| Notification | ⭐ | No mechanism |
-| Authorization | ⭐ | No mechanism |
-| Checkpoint cleanup | ⭐ | No auto-cleanup |
-| Thread listing | ⭐ | No built-in API |
-| Concurrent access | ⭐⭐ | Race condition possible |
+| Category | Item | Rating | Notes |
+|----------|------|--------|-------|
+| Tool Calling | Tool retry | ⭐⭐ | Custom implementation needed |
+| HITL | Audit logging | ⭐ | Fully custom |
+| HITL | Timeout | ⭐ | No mechanism |
+| HITL | Notification | ⭐ | No mechanism |
+| HITL | Authorization | ⭐ | No mechanism |
+| Durable | Checkpoint cleanup | ⭐ | No auto-cleanup |
+| Durable | Thread listing | ⭐ | No built-in API |
+| Durable | Concurrent access | ⭐⭐ | Race condition possible |
 
 ---
 

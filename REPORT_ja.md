@@ -716,30 +716,30 @@ async def approve(thread_id: str, decision: dict):
 
 ## Good
 
-| 項目 | 評価 | 備考 |
-|------|------|------|
-| `@tool` デコレータ | ⭐⭐⭐⭐⭐ | シンプル、Pydanticも使える |
-| `ToolNode` | ⭐⭐⭐⭐⭐ | 自動実行、エラーハンドリング |
-| 複数ツール並列 | ⭐⭐⭐⭐⭐ | 1メッセージで並列呼び出し |
-| `interrupt()` API | ⭐⭐⭐⭐⭐ | シンプルで直感的 |
-| `Command` による制御 | ⭐⭐⭐⭐⭐ | goto, update, resumeが柔軟 |
-| Approve/Reject/Edit | ⭐⭐⭐⭐⭐ | 全パターン実装可能 |
-| 状態永続化 | ⭐⭐⭐⭐ | Postgres/SQLite対応 |
-| Durable Execution | ⭐⭐⭐⭐ | 再起動後も再開可能 |
-| HITL永続化 | ⭐⭐⭐⭐⭐ | interruptが再起動後も維持 |
+| カテゴリ | 項目 | 評価 | 備考 |
+|----------|------|------|------|
+| Tool Calling | `@tool` デコレータ | ⭐⭐⭐⭐⭐ | シンプル、Pydanticも使える |
+| Tool Calling | `ToolNode` | ⭐⭐⭐⭐⭐ | 自動実行、エラーハンドリング |
+| Tool Calling | 複数ツール並列 | ⭐⭐⭐⭐⭐ | 1メッセージで並列呼び出し |
+| HITL | `interrupt()` API | ⭐⭐⭐⭐⭐ | シンプルで直感的 |
+| HITL | `Command` による制御 | ⭐⭐⭐⭐⭐ | goto, update, resumeが柔軟 |
+| HITL | Approve/Reject/Edit | ⭐⭐⭐⭐⭐ | 全パターン実装可能 |
+| Durable | 状態永続化 | ⭐⭐⭐⭐ | Postgres/SQLite対応 |
+| Durable | Durable Execution | ⭐⭐⭐⭐ | 再起動後も再開可能 |
+| Durable | HITL永続化 | ⭐⭐⭐⭐⭐ | interruptが再起動後も維持 |
 
 ## Not Good
 
-| 項目 | 評価 | 備考 |
-|------|------|------|
-| ツールリトライ | ⭐⭐ | 自前実装必要 |
-| 監査ログ | ⭐ | 完全に自前実装 |
-| タイムアウト | ⭐ | 仕組みなし |
-| 通知 | ⭐ | 仕組みなし |
-| 認可 | ⭐ | 仕組みなし |
-| Checkpointクリーンアップ | ⭐ | 自動クリーンアップなし |
-| スレッド一覧API | ⭐ | 組み込みAPIなし |
-| 並行アクセス | ⭐⭐ | 競合状態の可能性 |
+| カテゴリ | 項目 | 評価 | 備考 |
+|----------|------|------|------|
+| Tool Calling | ツールリトライ | ⭐⭐ | 自前実装必要 |
+| HITL | 監査ログ | ⭐ | 完全に自前実装 |
+| HITL | タイムアウト | ⭐ | 仕組みなし |
+| HITL | 通知 | ⭐ | 仕組みなし |
+| HITL | 認可 | ⭐ | 仕組みなし |
+| Durable | Checkpointクリーンアップ | ⭐ | 自動クリーンアップなし |
+| Durable | スレッド一覧API | ⭐ | 組み込みAPIなし |
+| Durable | 並行アクセス | ⭐⭐ | 競合状態の可能性 |
 
 ---
 
