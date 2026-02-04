@@ -1,6 +1,6 @@
 """
 LangGraph Production Considerations
-What's missing for production use? (HITL + Durable Execution)
+What's missing for production use? (HITL + Durable Execution + Memory)
 """
 
 # =============================================================================
@@ -227,6 +227,94 @@ Long conversations = large checkpoints.
 VERDICT: ⚠️ Monitor and manage
 
 
+
+
+# =============================================================================
+# MEMORY CONSIDERATIONS
+# =============================================================================
+
+## 16. MEMORY STORAGE - Production backend
+
+InMemoryStore is for development only.
+Production options:
+    from langgraph.store.postgres import AsyncPostgresStore
+
+    store = AsyncPostgresStore.from_conn_string(
+        "postgresql://...",
+        index={"dims": 1536, "embed": "openai:text-embedding-3-small"}
+    )
+
+VERDICT: ✅ Good support with Postgres
+
+
+## 17. EMBEDDING COSTS - Every memory operation uses embeddings
+
+Storing: Embedding generated for semantic index
+Searching: Query embedded for similarity search
+Background extraction: LLM call + embeddings
+
+    # Cost estimate per operation
+    # Store: ~$0.0001 per item (embedding)
+    # Search: ~$0.0001 per query (embedding)
+    # Background extraction: ~$0.01-0.05 per conversation (LLM)
+
+VERDICT: ⚠️ Monitor costs, batch operations when possible
+
+
+## 18. MEMORY CLEANUP - Old memories accumulate
+
+No built-in TTL or cleanup mechanism.
+Memories grow indefinitely.
+
+    # Must implement cleanup
+    # Option 1: TTL-based deletion
+    # Option 2: LRU eviction
+    # Option 3: User-initiated cleanup
+
+VERDICT: ⚠️ Must implement yourself
+
+
+## 19. MEMORY PRIVACY - PII in memories
+
+User data stored in memories may include PII.
+Need to consider:
+    - Data retention policies
+    - Right to be forgotten (GDPR)
+    - Encryption at rest
+
+    # Implement user data deletion
+    async def delete_user_data(user_id: str):
+        for item in store.search(("memories", user_id)):
+            store.delete(("memories", user_id), item.key)
+
+VERDICT: ⚠️ Must implement compliance layer
+
+
+## 20. MEMORY CONSISTENCY - Cross-thread coordination
+
+Store is eventually consistent.
+Concurrent writes to same key may conflict.
+
+    # Use unique keys or implement locking
+    key = f"memory_{uuid4()}"
+    store.put(namespace, key, value)
+
+VERDICT: ⚠️ Design for eventual consistency
+
+
+## 21. EXTRACTION QUALITY - LLM-based extraction varies
+
+Background extraction depends on LLM quality.
+May extract wrong facts or miss important ones.
+
+    # Consider:
+    # 1. Custom extraction prompts
+    # 2. Human review of extracted memories
+    # 3. Confidence thresholds
+
+VERDICT: ⚠️ Monitor and tune
+
+
 """
 
 # =============================================================================
@@ -246,6 +334,9 @@ SUMMARY = """
 │    - State resumability across restarts                                     │
 │    - HITL interrupts survive process restart                                │
 │    - Streaming support                                                      │
+│    - Store API for long-term memory                                         │
+│    - Semantic search with embeddings                                        │
+│    - LangMem agent memory tools                                             │
 │                                                                             │
 │ ⚠️ MUST IMPLEMENT YOURSELF (HITL):                                          │
 │    - Audit logging (who approved, when)                                     │
@@ -261,17 +352,26 @@ SUMMARY = """
 │    - State schema versioning (for migrations)                               │
 │    - Checkpoint size monitoring                                             │
 │                                                                             │
+│ ⚠️ MUST IMPLEMENT YOURSELF (MEMORY):                                        │
+│    - Embedding cost monitoring                                              │
+│    - Memory cleanup (TTL, LRU)                                              │
+│    - Privacy/compliance (PII, GDPR)                                         │
+│    - Extraction quality monitoring                                          │
+│    - Memory size limits                                                     │
+│                                                                             │
 │ 📝 VERDICT:                                                                 │
 │    LangGraph provides solid core primitives for:                            │
 │    - Graph execution with state                                             │
 │    - Human-in-the-loop interrupts                                           │
 │    - Durable execution with checkpoints                                     │
+│    - Long-term memory with semantic search                                  │
 │                                                                             │
 │    But for production, you need to build:                                   │
 │    - Approval management layer (UI, API, notifications)                     │
 │    - Audit/compliance layer                                                 │
 │    - Checkpoint cleanup jobs                                                │
 │    - Thread management system                                               │
+│    - Memory lifecycle management                                            │
 │    - Monitoring and alerting                                                │
 │                                                                             │
 │    Estimate: 3-5x effort for surrounding infrastructure                     │

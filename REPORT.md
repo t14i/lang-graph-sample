@@ -2,7 +2,7 @@
 
 ## Overview
 
-Verified LangGraph's Tool Calling and HITL (Human-in-the-Loop) features to evaluate production readiness.
+Verified LangGraph's Tool Calling, HITL (Human-in-the-Loop), Durable Execution, and Memory features to evaluate production readiness.
 
 ---
 
@@ -598,9 +598,253 @@ threads = cursor.fetchall()
 
 ---
 
-# Part 5: Production Considerations
+# Part 5: Memory
 
-## 5.1 Audit Logging
+## 5.1 Store Basic Operations (11_memory_store_basic.py)
+
+**Goal**: Verify InMemoryStore basic CRUD
+
+### Key Code
+
+```python
+from langgraph.store.memory import InMemoryStore
+
+store = InMemoryStore()
+
+# Put - save with namespace (like folders)
+store.put(("users", "user_123"), "preferences", {"theme": "dark", "language": "ja"})
+
+# Get - retrieve by namespace and key
+item = store.get(("users", "user_123"), "preferences")
+# item.value = {"theme": "dark", "language": "ja"}
+
+# Search - list items in namespace
+results = store.search(("users", "user_123"))
+
+# Delete
+store.delete(("users", "user_123"), "preferences")
+```
+
+### Output
+
+```
+PUT: ('users', 'user_123'), key='preferences', value={'theme': 'dark', 'language': 'ja'}
+GET: Item(namespace=['users', 'user_123'], key='preferences', value={'theme': 'dark', 'language': 'ja'})
+Search ('users', 'user_123'): 2 items found
+GET after delete: None
+```
+
+### Summary
+
+| Operation | Description |
+|-----------|-------------|
+| `put(namespace, key, value)` | Save/update data |
+| `get(namespace, key)` | Retrieve (None if not found) |
+| `search(namespace)` | List items in namespace |
+| `delete(namespace, key)` | Remove data |
+
+---
+
+## 5.2 Semantic Search (12_memory_semantic_search.py)
+
+**Goal**: Verify embedding-based semantic search
+
+### Key Code
+
+```python
+from langgraph.store.memory import InMemoryStore
+
+store = InMemoryStore(
+    index={
+        "dims": 1536,  # text-embedding-3-small dimension
+        "embed": "openai:text-embedding-3-small",
+    }
+)
+
+# Store with 'text' field for semantic indexing
+store.put(("memories",), "food_1", {"text": "I love Italian food, especially pasta"})
+store.put(("memories",), "work_1", {"text": "I work as a software engineer"})
+
+# Semantic search
+results = store.search(
+    ("memories",),
+    query="What food do I like?",
+    limit=3
+)
+for item in results:
+    print(f"[{item.score:.4f}] {item.value['text']}")
+```
+
+### Expected Output
+
+```
+Query: 'What food do I like?'
+  [0.8523] I love Italian food, especially pasta
+  [0.4102] I work as a software engineer
+
+Query: 'dietary restrictions'
+  [0.7891] I'm allergic to shellfish and peanuts
+```
+
+### Summary
+
+| Feature | Description |
+|---------|-------------|
+| Embedding model | OpenAI text-embedding-3-small |
+| Similarity | Cosine similarity (0-1) |
+| Filter | Metadata-based filtering supported |
+| Score > 0.8 | High relevance |
+| Score < 0.5 | Low relevance |
+
+---
+
+## 5.3 Cross-Thread Persistence (13_memory_cross_thread.py)
+
+**Goal**: Verify memory sharing across different thread_ids
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                 Store (Long-term)                    │
+│  ┌─────────────────┐    ┌─────────────────┐        │
+│  │  users/alice/   │    │  users/bob/     │        │
+│  │  - memory_0     │    │  - memory_0     │        │
+│  │  - memory_1     │    │                 │        │
+│  └─────────────────┘    └─────────────────┘        │
+└─────────────────────────────────────────────────────┘
+                ↑ shared across all threads
+
+┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+│ thread-1 │  │ thread-2 │  │ thread-3 │  │ thread-4 │
+│ (Alice)  │  │ (Alice)  │  │  (Bob)   │  │ (Alice)  │
+└──────────┘  └──────────┘  └──────────┘  └──────────┘
+      ↓              ↓              ↓              ↓
+┌─────────────────────────────────────────────────────┐
+│            Checkpointer (Short-term)                 │
+│      Each thread has separate conversation           │
+└─────────────────────────────────────────────────────┘
+```
+
+### Key Points
+
+- **Store**: Cross-thread, namespace isolates users
+- **Checkpointer**: Per-thread conversation history
+- Session 1 saves memory → Session 2 (different thread) can access
+
+---
+
+## 5.4 LangMem Memory Tools (14_memory_langmem_tools.py)
+
+**Goal**: Verify agent-managed memory with LangMem
+
+### Key Code
+
+```python
+from langmem import create_manage_memory_tool, create_search_memory_tool
+from langgraph.prebuilt import create_react_agent
+from langgraph.store.memory import InMemoryStore
+
+store = InMemoryStore(index={"dims": 1536, "embed": "openai:text-embedding-3-small"})
+
+# Create memory tools with namespace template
+manage_memory = create_manage_memory_tool(namespace=("memories", "{user_id}"))
+search_memory = create_search_memory_tool(namespace=("memories", "{user_id}"))
+
+agent = create_react_agent(
+    "openai:gpt-4o",
+    tools=[manage_memory, search_memory],
+    store=store,
+)
+
+# Agent autonomously saves/searches memories
+response = agent.invoke(
+    {"messages": [{"role": "user", "content": "My name is Taro. Please remember this."}]},
+    config={"configurable": {"user_id": "user_123"}}
+)
+```
+
+### Agent Behavior
+
+| Action | When |
+|--------|------|
+| Save memory | User says "remember" or shares personal info |
+| Search memory | User asks about past information |
+| Update memory | User corrects previous information |
+
+### Unique Feature
+
+LangMem's memory tools are **not available in CrewAI**. Agent has explicit control over memory operations.
+
+---
+
+## 5.5 Background Extraction (15_memory_background_extraction.py)
+
+**Goal**: Verify automatic fact extraction from conversations
+
+### Key Code
+
+```python
+from langmem import create_memory_store_manager
+
+manager = create_memory_store_manager(
+    "openai:gpt-4o",
+    namespace=("memories", "{user_id}"),
+)
+
+conversation = [
+    {"role": "user", "content": "I love Italian food but I'm allergic to shellfish."},
+    {"role": "assistant", "content": "I'll note your food preferences and allergy."},
+]
+
+# Extract memories asynchronously
+await manager.ainvoke(
+    {"messages": conversation},
+    config={"configurable": {"user_id": "user_123"}},
+    store=store,
+)
+```
+
+### Extraction Behavior
+
+- Identifies user facts, preferences, constraints
+- Creates semantic embeddings for search
+- Updates conflicting information (consolidation)
+- Runs asynchronously (background processing)
+
+---
+
+## 5.6 Memory Summary
+
+| Feature | Support | Notes |
+|---------|---------|-------|
+| Basic CRUD | ✅ Full | put/get/delete/search |
+| Namespace | ✅ Full | Folder-like structure |
+| Semantic search | ✅ Full | OpenAI embeddings |
+| Cross-thread | ✅ Full | Store shared across threads |
+| LangMem tools | ✅ Full | Agent-managed memory |
+| Background extraction | ✅ Full | Auto fact extraction |
+| Production storage | ✅ PostgresStore | pgvector for vectors |
+| Cleanup | ❌ None | No TTL/auto-cleanup |
+| Privacy | ⚠️ Manual | PII handling needed |
+
+### CrewAI Comparison
+
+| Feature | LangGraph + LangMem | CrewAI |
+|---------|---------------------|--------|
+| Basic structure | Store + namespace | ChromaDB + SQLite |
+| Embedding | OpenAI (configurable) | OpenAI (configurable) |
+| Semantic search | ✅ | ✅ |
+| Cross-session | ✅ | ✅ |
+| Agent memory tools | ✅ **Unique** | ❌ |
+| Background extraction | ✅ **Unique** | ❌ |
+| Production storage | PostgresStore | External DB migration |
+
+---
+
+# Part 6: Production Considerations
+
+## 6.1 Audit Logging
 
 **Current**: None
 
@@ -624,7 +868,7 @@ def human_approval(state: State) -> Command:
 
 ---
 
-## 5.2 Timeout
+## 6.2 Timeout
 
 **Current**: None. Waits forever when interrupted.
 
@@ -646,7 +890,7 @@ async def cleanup_stale_threads():
 
 ---
 
-## 5.3 Notification System
+## 6.3 Notification System
 
 **Current**: None
 
@@ -660,7 +904,7 @@ if state.next:
 
 ---
 
-## 5.4 Authorization (Who Can Approve)
+## 6.4 Authorization (Who Can Approve)
 
 **Current**: None
 
@@ -678,7 +922,7 @@ def human_approval(state: State) -> Command:
 
 ---
 
-## 5.5 Web API Integration Pattern
+## 6.5 Web API Integration Pattern
 
 ```python
 from fastapi import FastAPI
@@ -711,7 +955,7 @@ async def approve(thread_id: str, decision: dict):
 ```
 
 ---
-# Part 6: Evaluation Summary
+# Part 7: Evaluation Summary
 
 ## Good
 
@@ -726,6 +970,11 @@ async def approve(thread_id: str, decision: dict):
 | Durable | State persistence | ⭐⭐⭐⭐ | Postgres/SQLite support |
 | Durable | Durable execution | ⭐⭐⭐⭐ | Resume after restart |
 | Durable | HITL durability | ⭐⭐⭐⭐⭐ | Interrupts survive restart |
+| Memory | Store API | ⭐⭐⭐⭐⭐ | Simple CRUD, namespace |
+| Memory | Semantic search | ⭐⭐⭐⭐⭐ | OpenAI embeddings |
+| Memory | Cross-thread | ⭐⭐⭐⭐⭐ | Shared across sessions |
+| Memory | LangMem tools | ⭐⭐⭐⭐⭐ | Agent-managed memory |
+| Memory | Background extraction | ⭐⭐⭐⭐ | Auto fact extraction |
 
 ## Not Good
 
@@ -739,10 +988,13 @@ async def approve(thread_id: str, decision: dict):
 | Durable | Checkpoint cleanup | ⭐ | No auto-cleanup |
 | Durable | Thread listing | ⭐ | No built-in API |
 | Durable | Concurrent access | ⭐⭐ | Race condition possible |
+| Memory | Memory cleanup | ⭐ | No TTL/auto-cleanup |
+| Memory | Privacy/PII | ⭐⭐ | Manual compliance |
+| Memory | Embedding costs | ⭐⭐ | Per-operation cost |
 
 ---
 
-# Part 7: Conclusion
+# Part 8: Conclusion
 
 ## Tool Calling
 
@@ -770,16 +1022,27 @@ Production concerns:
 - No thread listing API (must query storage directly)
 - Concurrent access on same thread_id causes race conditions
 
+## Memory
+
+**Strong capabilities.** Store API is simple and effective. Semantic search with embeddings works well. LangMem provides unique agent-managed memory features not available in CrewAI.
+
+Production concerns:
+- Embedding costs per operation
+- No built-in TTL/cleanup
+- Privacy/PII compliance needs manual implementation
+- Background extraction quality varies
+
 ## Additional Development for Production
 
 1. **Approval Management Service** - Manage pending threads, provide UI
 2. **Audit Log Service** - Record all operations
 3. **Notification Service** - Slack/Email integration
 4. **Authorization Service** - Role-based approval permissions
-5. **Background Jobs** - Timeout handling, checkpoint cleanup
+5. **Background Jobs** - Timeout handling, checkpoint cleanup, memory cleanup
 6. **Retry/Circuit Breaker** - Stabilize external API calls
 7. **Thread Management** - Track active threads, cleanup old ones
 8. **Unique ID Generation** - Prevent concurrent access issues
+9. **Memory Lifecycle** - TTL, cleanup, cost monitoring
 
 **Effort estimate**: 3-5x the graph execution portion for surrounding systems.
 
@@ -798,7 +1061,12 @@ lang-graph-sample/
 ├── 07_durable_basic.py           # Durable execution basics
 ├── 08_durable_hitl.py            # HITL + Durability
 ├── 09_durable_production.py      # Durable production concerns
-├── 10_production_considerations.py # Overall production summary
+├── 11_memory_store_basic.py      # Memory Store CRUD
+├── 12_memory_semantic_search.py  # Semantic search
+├── 13_memory_cross_thread.py     # Cross-thread persistence
+├── 14_memory_langmem_tools.py    # LangMem agent tools
+├── 15_memory_background_extraction.py # Background extraction
+├── 16_production_considerations.py # Overall production summary
 ├── REPORT.md                     # This report
 ├── REPORT_ja.md                  # Japanese version
 ├── .env.example                  # Environment template

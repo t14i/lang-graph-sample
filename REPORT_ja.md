@@ -2,7 +2,7 @@
 
 ## 概要
 
-LangGraphのTool CallingとHITL（Human-in-the-Loop）機能を検証し、本番環境での利用可能性を評価した。
+LangGraphのTool Calling、HITL（Human-in-the-Loop）、Durable Execution、Memory機能を検証し、本番環境での利用可能性を評価した。
 
 ---
 
@@ -598,9 +598,253 @@ threads = cursor.fetchall()
 
 ---
 
-# Part 5: 本番環境での課題
+# Part 5: Memory
 
-## 5.1 監査ログ
+## 5.1 Store基本操作（11_memory_store_basic.py）
+
+**目的**: InMemoryStoreの基本CRUD操作確認
+
+### コード
+
+```python
+from langgraph.store.memory import InMemoryStore
+
+store = InMemoryStore()
+
+# put - namespace（フォルダ構造）で保存
+store.put(("users", "user_123"), "preferences", {"theme": "dark", "language": "ja"})
+
+# get - namespaceとkeyで取得
+item = store.get(("users", "user_123"), "preferences")
+# item.value = {"theme": "dark", "language": "ja"}
+
+# search - namespace内のアイテムを一覧
+results = store.search(("users", "user_123"))
+
+# delete - 削除
+store.delete(("users", "user_123"), "preferences")
+```
+
+### 実行結果
+
+```
+PUT: ('users', 'user_123'), key='preferences', value={'theme': 'dark', 'language': 'ja'}
+GET: Item(namespace=['users', 'user_123'], key='preferences', value={'theme': 'dark', 'language': 'ja'})
+Search ('users', 'user_123'): 2 items found
+GET after delete: None
+```
+
+### まとめ
+
+| 操作 | 説明 |
+|------|------|
+| `put(namespace, key, value)` | 保存/更新 |
+| `get(namespace, key)` | 取得（存在しない場合None） |
+| `search(namespace)` | namespace内のアイテム一覧 |
+| `delete(namespace, key)` | 削除 |
+
+---
+
+## 5.2 セマンティック検索（12_memory_semantic_search.py）
+
+**目的**: Embeddingベースのセマンティック検索確認
+
+### コード
+
+```python
+from langgraph.store.memory import InMemoryStore
+
+store = InMemoryStore(
+    index={
+        "dims": 1536,  # text-embedding-3-small次元
+        "embed": "openai:text-embedding-3-small",
+    }
+)
+
+# 'text'フィールドでセマンティックインデックス
+store.put(("memories",), "food_1", {"text": "I love Italian food, especially pasta"})
+store.put(("memories",), "work_1", {"text": "I work as a software engineer"})
+
+# セマンティック検索
+results = store.search(
+    ("memories",),
+    query="What food do I like?",
+    limit=3
+)
+for item in results:
+    print(f"[{item.score:.4f}] {item.value['text']}")
+```
+
+### 期待される結果
+
+```
+Query: 'What food do I like?'
+  [0.8523] I love Italian food, especially pasta
+  [0.4102] I work as a software engineer
+
+Query: 'dietary restrictions'
+  [0.7891] I'm allergic to shellfish and peanuts
+```
+
+### まとめ
+
+| 機能 | 説明 |
+|------|------|
+| Embeddingモデル | OpenAI text-embedding-3-small |
+| 類似度 | コサイン類似度（0-1） |
+| フィルター | メタデータベースのフィルタリング可能 |
+| Score > 0.8 | 高い関連性 |
+| Score < 0.5 | 低い関連性 |
+
+---
+
+## 5.3 クロススレッド永続化（13_memory_cross_thread.py）
+
+**目的**: 異なるthread_id間でのメモリ共有確認
+
+### アーキテクチャ
+
+```
+┌─────────────────────────────────────────────────────┐
+│                 Store（長期メモリ）                   │
+│  ┌─────────────────┐    ┌─────────────────┐        │
+│  │  users/alice/   │    │  users/bob/     │        │
+│  │  - memory_0     │    │  - memory_0     │        │
+│  │  - memory_1     │    │                 │        │
+│  └─────────────────┘    └─────────────────┘        │
+└─────────────────────────────────────────────────────┘
+                ↑ 全スレッドで共有
+
+┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+│ thread-1 │  │ thread-2 │  │ thread-3 │  │ thread-4 │
+│ (Alice)  │  │ (Alice)  │  │  (Bob)   │  │ (Alice)  │
+└──────────┘  └──────────┘  └──────────┘  └──────────┘
+      ↓              ↓              ↓              ↓
+┌─────────────────────────────────────────────────────┐
+│            Checkpointer（短期メモリ）                 │
+│        各スレッドで独立した会話履歴                    │
+└─────────────────────────────────────────────────────┘
+```
+
+### ポイント
+
+- **Store**: クロススレッド、namespaceでユーザー分離
+- **Checkpointer**: スレッドごとの会話履歴
+- セッション1で保存 → セッション2（別スレッド）でアクセス可能
+
+---
+
+## 5.4 LangMem Memory Tools（14_memory_langmem_tools.py）
+
+**目的**: LangMemによるエージェント管理メモリの確認
+
+### コード
+
+```python
+from langmem import create_manage_memory_tool, create_search_memory_tool
+from langgraph.prebuilt import create_react_agent
+from langgraph.store.memory import InMemoryStore
+
+store = InMemoryStore(index={"dims": 1536, "embed": "openai:text-embedding-3-small"})
+
+# namespaceテンプレートでメモリツール作成
+manage_memory = create_manage_memory_tool(namespace=("memories", "{user_id}"))
+search_memory = create_search_memory_tool(namespace=("memories", "{user_id}"))
+
+agent = create_react_agent(
+    "openai:gpt-4o",
+    tools=[manage_memory, search_memory],
+    store=store,
+)
+
+# エージェントが自律的にメモリを保存/検索
+response = agent.invoke(
+    {"messages": [{"role": "user", "content": "私の名前は田中です。覚えておいて。"}]},
+    config={"configurable": {"user_id": "user_123"}}
+)
+```
+
+### エージェントの動作
+
+| アクション | タイミング |
+|------------|-----------|
+| メモリ保存 | 「覚えて」や個人情報の共有時 |
+| メモリ検索 | 過去の情報について質問された時 |
+| メモリ更新 | 以前の情報を訂正された時 |
+
+### 特徴
+
+LangMemのメモリツールは**CrewAIにはない機能**。エージェントがメモリ操作を明示的に制御できる。
+
+---
+
+## 5.5 バックグラウンド抽出（15_memory_background_extraction.py）
+
+**目的**: 会話からの自動ファクト抽出確認
+
+### コード
+
+```python
+from langmem import create_memory_store_manager
+
+manager = create_memory_store_manager(
+    "openai:gpt-4o",
+    namespace=("memories", "{user_id}"),
+)
+
+conversation = [
+    {"role": "user", "content": "イタリアン大好きだけど、貝類アレルギーがあるんです。"},
+    {"role": "assistant", "content": "食の好みとアレルギーをメモしておきますね。"},
+]
+
+# 非同期でメモリ抽出
+await manager.ainvoke(
+    {"messages": conversation},
+    config={"configurable": {"user_id": "user_123"}},
+    store=store,
+)
+```
+
+### 抽出の動作
+
+- ユーザーのファクト、好み、制約を識別
+- セマンティック検索用のEmbeddingを作成
+- 矛盾する情報を更新（統合）
+- 非同期で処理（バックグラウンド）
+
+---
+
+## 5.6 Memoryまとめ
+
+| 機能 | サポート | 備考 |
+|------|---------|------|
+| 基本CRUD | ✅ 完全 | put/get/delete/search |
+| Namespace | ✅ 完全 | フォルダ構造 |
+| セマンティック検索 | ✅ 完全 | OpenAI Embeddings |
+| クロススレッド | ✅ 完全 | Storeは全スレッドで共有 |
+| LangMemツール | ✅ 完全 | エージェント管理メモリ |
+| バックグラウンド抽出 | ✅ 完全 | 自動ファクト抽出 |
+| 本番ストレージ | ✅ PostgresStore | pgvectorでベクトル |
+| クリーンアップ | ❌ なし | TTL/自動クリーンアップなし |
+| プライバシー | ⚠️ 手動 | PII対応は自前 |
+
+### CrewAI比較
+
+| 機能 | LangGraph + LangMem | CrewAI |
+|------|---------------------|--------|
+| 基本構造 | Store + namespace | ChromaDB + SQLite |
+| Embedding | OpenAI（設定可能） | OpenAI（設定可能） |
+| セマンティック検索 | ✅ | ✅ |
+| クロスセッション | ✅ | ✅ |
+| エージェントメモリツール | ✅ **独自機能** | ❌ |
+| バックグラウンド抽出 | ✅ **独自機能** | ❌ |
+| 本番ストレージ | PostgresStore | 外部DB移行必要 |
+
+---
+
+# Part 6: 本番環境での課題
+
+## 6.1 監査ログ
 
 **現状**: なし
 
@@ -624,7 +868,7 @@ def human_approval(state: State) -> Command:
 
 ---
 
-## 5.2 タイムアウト
+## 6.2 タイムアウト
 
 **現状**: なし。中断したまま永久に待機。
 
@@ -646,7 +890,7 @@ async def cleanup_stale_threads():
 
 ---
 
-## 5.3 通知システム
+## 6.3 通知システム
 
 **現状**: なし
 
@@ -660,7 +904,7 @@ if state.next:
 
 ---
 
-## 5.4 認可（誰が承認できるか）
+## 6.4 認可（誰が承認できるか）
 
 **現状**: なし
 
@@ -712,7 +956,7 @@ async def approve(thread_id: str, decision: dict):
 
 ---
 
-# Part 6: 評価まとめ
+# Part 7: 評価まとめ
 
 ## Good
 
@@ -727,6 +971,11 @@ async def approve(thread_id: str, decision: dict):
 | Durable | 状態永続化 | ⭐⭐⭐⭐ | Postgres/SQLite対応 |
 | Durable | Durable Execution | ⭐⭐⭐⭐ | 再起動後も再開可能 |
 | Durable | HITL永続化 | ⭐⭐⭐⭐⭐ | interruptが再起動後も維持 |
+| Memory | Store API | ⭐⭐⭐⭐⭐ | シンプルなCRUD、namespace |
+| Memory | セマンティック検索 | ⭐⭐⭐⭐⭐ | OpenAI Embeddings |
+| Memory | クロススレッド | ⭐⭐⭐⭐⭐ | セッション間で共有 |
+| Memory | LangMemツール | ⭐⭐⭐⭐⭐ | エージェント管理メモリ |
+| Memory | バックグラウンド抽出 | ⭐⭐⭐⭐ | 自動ファクト抽出 |
 
 ## Not Good
 
@@ -740,6 +989,9 @@ async def approve(thread_id: str, decision: dict):
 | Durable | Checkpointクリーンアップ | ⭐ | 自動クリーンアップなし |
 | Durable | スレッド一覧API | ⭐ | 組み込みAPIなし |
 | Durable | 並行アクセス | ⭐⭐ | 競合状態の可能性 |
+| Memory | メモリクリーンアップ | ⭐ | TTL/自動クリーンアップなし |
+| Memory | プライバシー/PII | ⭐⭐ | コンプライアンスは手動 |
+| Memory | Embeddingコスト | ⭐⭐ | 操作ごとにコスト発生 |
 
 ---
 
@@ -771,16 +1023,27 @@ async def approve(thread_id: str, decision: dict):
 - スレッド一覧APIなし（ストレージを直接クエリ必要）
 - 同じthread_idでの並行アクセスは競合状態を引き起こす
 
+## Memory
+
+**機能は充実。** Store APIはシンプルで効果的。Embeddingによるセマンティック検索も正常動作。LangMemはCrewAIにはないエージェント管理メモリ機能を提供。
+
+本番での課題:
+- 操作ごとのEmbeddingコスト
+- TTL/自動クリーンアップなし
+- プライバシー/PIIコンプライアンスは自前実装
+- バックグラウンド抽出の品質はLLM依存
+
 ## 本番導入時の追加開発
 
 1. **承認管理サービス** - 承認待ちスレッドの管理、UI提供
 2. **監査ログサービス** - 全操作の記録
 3. **通知サービス** - Slack/Email連携
 4. **認可サービス** - ロールベースの承認権限
-5. **バックグラウンドジョブ** - タイムアウト処理、Checkpointクリーンアップ
+5. **バックグラウンドジョブ** - タイムアウト処理、Checkpoint/メモリクリーンアップ
 6. **リトライ/サーキットブレーカー** - 外部API呼び出しの安定化
 7. **スレッド管理** - アクティブスレッドの追跡、古いスレッドのクリーンアップ
 8. **ユニークID生成** - 並行アクセス問題の回避
+9. **メモリライフサイクル管理** - TTL、クリーンアップ、コスト監視
 
 **工数感**: グラフ実行部分の3-5倍の周辺システムが必要。
 
@@ -799,7 +1062,12 @@ lang-graph-sample/
 ├── 07_durable_basic.py           # Durable Execution基本
 ├── 08_durable_hitl.py            # HITL + 永続化
 ├── 09_durable_production.py      # Durable本番課題
-├── 10_production_considerations.py # 本番課題まとめ
+├── 11_memory_store_basic.py      # Memory Store CRUD
+├── 12_memory_semantic_search.py  # セマンティック検索
+├── 13_memory_cross_thread.py     # クロススレッド永続化
+├── 14_memory_langmem_tools.py    # LangMemエージェントツール
+├── 15_memory_background_extraction.py # バックグラウンド抽出
+├── 16_production_considerations.py # 本番課題まとめ
 ├── REPORT.md                     # 英語版レポート
 ├── REPORT_ja.md                  # このレポート（日本語）
 ├── .env.example                  # 環境変数テンプレート

@@ -1,6 +1,6 @@
 # LangGraph Sample
 
-Verification repository for LangGraph's Tool Calling and HITL (Human-in-the-Loop) features.
+Verification repository for LangGraph's Tool Calling, HITL (Human-in-the-Loop), Durable Execution, and Memory features.
 
 ## Setup
 
@@ -8,12 +8,19 @@ Verification repository for LangGraph's Tool Calling and HITL (Human-in-the-Loop
 # Install dependencies
 uv sync
 
-# Copy .env.example to .env and set your API key
+# Copy .env.example to .env and set your API keys
 cp .env.example .env
 
 # Run scripts
 uv run --env-file .env python 01_quickstart.py
 ```
+
+## API Keys Required
+
+| Feature | API Key |
+|---------|---------|
+| Tool Calling, HITL, Durable | `ANTHROPIC_API_KEY` |
+| Memory (embeddings) | `OPENAI_API_KEY` |
 
 ## Files
 
@@ -28,7 +35,12 @@ uv run --env-file .env python 01_quickstart.py
 | `07_durable_basic.py` | Durable execution basics |
 | `08_durable_hitl.py` | HITL + Durability |
 | `09_durable_production.py` | Durable execution production concerns |
-| `10_production_considerations.py` | Overall production considerations |
+| `11_memory_store_basic.py` | Memory Store basic CRUD |
+| `12_memory_semantic_search.py` | Semantic search with embeddings |
+| `13_memory_cross_thread.py` | Cross-thread memory persistence |
+| `14_memory_langmem_tools.py` | LangMem Memory Tools for agents |
+| `15_memory_background_extraction.py` | Background memory extraction |
+| `16_production_considerations.py` | Overall production considerations |
 | `REPORT.md` | Detailed verification report |
 | `REPORT_ja.md` | Japanese version of the report |
 
@@ -57,5 +69,16 @@ uv run --env-file .env python 01_quickstart.py
   - No auto-cleanup of old checkpoints
   - No built-in thread listing API
   - Concurrent execution on same thread_id can cause issues
+
+### Memory
+- `InMemoryStore` for development, `PostgresStore` for production
+- Namespace-based organization (like folders)
+- Semantic search with OpenAI embeddings
+- LangMem tools enable agent-managed memory
+- Background extraction for automatic fact capture
+- Production concerns:
+  - Embedding costs
+  - Memory cleanup (no TTL)
+  - Privacy/PII compliance
 
 See [REPORT.md](./REPORT.md) for details.
